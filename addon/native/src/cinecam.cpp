@@ -157,6 +157,7 @@ struct Config {
     float capture = 0;            // changed: append the current camera as a key to sequences\_captured.json
     float seek = -1;              // >= 0 and changed: seek there
     float select_shot = -1;       // changed (>= 0): select shot N in the editor (for tests without a mouse)
+    float dump_tracks = 0;        // changed: write the recorded car positions to tracks.csv (planning shots offline)
     float base_speed = 0;         // != 0: replay base speed multiplier (RS+0x24); 0 = leave it to the sequence / 1.0
     float list_cars = 0;          // changed: log every car slot with its distance to the followed car
     float freecam = 0;            // changed: open / close the editor (like F9)
@@ -174,9 +175,9 @@ struct Config {
     float fade = 0;               // Final Cut only (never in a render; fades are done in post): fade from / to black
     float preroll = 1.0f;         // Final Cut: start this long before the first shot (black), so the game settles
     int render_fps = 60;          // Render: output frames per second
-    int render_settle = 4;        // Render: rendered frames each output frame is held for before it is captured
+    int render_settle = 12;       // Render: rendered frames each output frame is held for before it is captured
     int render_crf = 16;          // Render: x264 quality (lower = better, bigger)
-    int render_format = 0;        // Render: 0 H.264 (.mp4), 1 ProRes 422 HQ (.mov), 2 ProRes 4444 XQ (.mov)
+    int render_format = 0;        // Render: 0 H.264 (.mp4), 1 ProRes 422 HQ (.mov), 2 ProRes 4444 XQ (.mov), 3 H.265 (.mp4)
     bool render_audio = true;     // Render: a real-time sound pass after the video, joined into the file
     int render_blur = 1;          // Render: motion blur samples per frame (1 = off; 4, 8, 16)
     bool render_screen_capture = false; // Render: capture the screen instead of the window (the game must stay in front)
@@ -275,6 +276,7 @@ void load_config()
         else if (k == "key_curve") c.key_curve = f >= 0.5f ? 1 : 0;
         else if (k == "check_clipping") c.check_clipping = f != 0;
         else if (k == "select_shot") c.select_shot = f;
+        else if (k == "dump_tracks") c.dump_tracks = f;
         else if (k == "final_cut") c.final_cut = f;
         else if (k == "render") c.render = f;
         else if (k == "speed_trace") c.speed_trace = f;
@@ -282,9 +284,11 @@ void load_config()
         else if (k == "fade") c.fade = std::max(0.0f, f);
         else if (k == "preroll") c.preroll = std::max(0.0f, f);
         else if (k == "render_fps") c.render_fps = std::clamp(int(f), 10, 240);
-        else if (k == "render_settle") c.render_settle = std::clamp(int(f), 2, 60);
+        // at least 8: with 4 (the old default), some frames still showed the cars twice, half-blended with where
+        // they were before the step (live test 2026-11-05: 8 and 12 clean, about the same render time)
+        else if (k == "render_settle") c.render_settle = std::clamp(int(f), 8, 60);
         else if (k == "render_crf") c.render_crf = std::clamp(int(f), 0, 51);
-        else if (k == "render_format") c.render_format = std::clamp(int(f), 0, 2);
+        else if (k == "render_format") c.render_format = std::clamp(int(f), 0, 3);
         else if (k == "render_dir") c.render_dir = v;
         else if (k == "render_audio") c.render_audio = f != 0;
         else if (k == "render_blur") c.render_blur = std::clamp(int(f), 1, 32);
@@ -473,6 +477,27 @@ struct CarTrack {
             v[size_t(b)] = {{f->p.x, f->p.y, f->p.z}, {f->r.x, f->r.y, f->r.z}, {f->u.x, f->u.y, f->u.z},
                             {f->f.x, f->f.y, f->f.z}, true};
         }
+    }
+    // Writes every recorded sample to `path` as CSV (t, slot, position, right, up, forward), for planning shots
+    // offline (cfg dump_tracks). Returns the number of rows.
+    size_t dump(const std::string &path) const
+    {
+        FILE *fp = fopen(path.c_str(), "wb");
+        if (!fp)
+            return 0;
+        fprintf(fp, "t,slot,px,py,pz,rx,ry,rz,ux,uy,uz,fx,fy,fz\n");
+        size_t rows = 0;
+        for (int i = 0; i < 32; i++)
+            for (size_t b = 0; b < s[i].size(); b++) {
+                const Sample &q = s[i][b];
+                if (!q.ok)
+                    continue;
+                fprintf(fp, "%.2f,%d,%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", float(b) / kRate, i,
+                        q.p[0], q.p[1], q.p[2], q.r[0], q.r[1], q.r[2], q.u[0], q.u[1], q.u[2], q.f[0], q.f[1], q.f[2]);
+                rows++;
+            }
+        fclose(fp);
+        return rows;
     }
     // the recorded fraction of [t0, t1] for car i
     float coverage(int i, float t0, float t1) const
@@ -3120,6 +3145,18 @@ void inspector(oui::Ui &u, SwoftyPaint *p, const Status &st, cine::Edit &ed)
         snprintf(b, sizeof b, "Keys: %d%s", nk, nsel ? ("   selected " + std::to_string(nsel)).c_str() : "");
         oui::label(u, {c.x, y, c.w, row}, b);
         y += row;
+        // the selected keys' FOV (several: each moves by the same amount, so their differences stay)
+        if (nsel) {
+            float f = s.keys[size_t(first_sel)].fov, f0 = f;
+            slider(nsel > 1 ? "Key FOV (first selected)" : "Key FOV", f, 5, 140, "%.1f", 0.5f);
+            if (f != f0)
+                for (auto &k : s.keys)
+                    if (k.selected)
+                        k.fov = std::clamp(k.fov + (f - f0), 5.0f, 140.0f);
+        } else if (nk) {
+            oui::label(u, {c.x, y, c.w, row}, "Select a key to change its FOV", kDim);
+            y += row;
+        }
         if (oui::button(u, {c.x, y, third, row}, "+ Key (K)"))
             post({CmdKind::AddKey});
         if (oui::button(u, {c.x + third + gap, y, third, row}, "Set from view") && first_sel >= 0)
@@ -3282,7 +3319,10 @@ void props_panel(oui::Ui &u, SwoftyPaint *p, const Status &st, cine::Edit &ed)
     float y = c.y;
     char b[160];
     float name_w = u.u(140), val_w = u.u(80), dia_w = u.u(28);
-    float lx = c.x + name_w + val_w + dia_w, lw = c.x + c.w - lx;  // the lane: the shot's time across
+    // the lane: the shot's time across. Inset by a key's half width at both ends, so a key at the shot's start
+    // doesn't sit on the row's key button (a click there hit both)
+    float pad = u.u(10);
+    float lx = c.x + name_w + val_w + dia_w + pad, lw = c.x + c.w - pad - lx;
     auto lane_x = [&](float t) { return lx + (t - s.t0) / std::max(0.05f, s.t1 - s.t0) * lw; };
     bool inside_shot = st.t >= s.t0 - 0.02f && st.t <= s.t1 + 0.02f;
     for (const auto &pi : props) {
@@ -3657,10 +3697,11 @@ void render_menu(oui::Ui &u, SwoftyPaint *p, const Status &st, cine::Edit &ed)
     y += row + gap * 2;
     {
         char q2[32];
-        if (st.o_format == 0)
-            snprintf(q2, sizeof q2, "H.264 q%d", st.o_crf);
+        bool crf_fmt = st.o_format == 0 || st.o_format == 3;
+        if (crf_fmt)
+            snprintf(q2, sizeof q2, "%s q%d", st.o_format == 3 ? "H.265" : "H.264", st.o_crf);
         snprintf(b, sizeof b, "%d fps, %s, sound %s  (change in Options)", st.o_fps,
-                 st.o_format == 0 ? q2 : st.o_format == 1 ? "ProRes HQ" : "ProRes 4444", st.o_audio ? "on" : "off");
+                 crf_fmt ? q2 : st.o_format == 1 ? "ProRes HQ" : "ProRes 4444", st.o_audio ? "on" : "off");
     }
     oui::label(u, {c.x, y, c.w, row}, b, kDim);
     y += row;
@@ -3768,9 +3809,9 @@ void options_pane(oui::Ui &u, SwoftyPaint *p, const Status &st, bool open)
     // left column: rendering
     section("RENDER");
     choice("Frame rate", v.fps, {{"24", 24}, {"30", 30}, {"60", 60}, {"120", 120}});
-    slider("Settle frames (more = cleaner anti-aliasing, slower)", v.settle, 2, 16, "%.0f");
-    choice("Format", v.format, {{"H.264", 0}, {"ProRes HQ", 1}, {"ProRes 4444", 2}});
-    if (v.format < 0.5f)
+    slider("Settle frames (more = cleaner frames, slower)", v.settle, 8, 24, "%.0f");
+    choice("Format", v.format, {{"H.264", 0}, {"H.265", 3}, {"ProRes HQ", 1}, {"ProRes 4444", 2}});
+    if (v.format < 0.5f || v.format > 2.5f)
         slider("Quality (lower = better, bigger file)", v.crf, 0, 35, "%.0f");
     choice("Motion blur", v.blur, {{"Off", 1}, {"4", 4}, {"8", 8}, {"16", 16}});
     if (v.blur > 1)
@@ -4017,6 +4058,9 @@ void undo_redo(bool redo)
     save_sequence_locked();
     if (g_shot >= int(g_edit.shots.size()))
         g_shot = -1;
+    // the snapshot carries the selection of its time; keep it to the inspected shot so no stale flag lingers
+    for (int i = 0; i < int(g_edit.shots.size()); i++)
+        g_edit.shots[size_t(i)].selected = i == g_shot;
     toast(redo ? "Redo" : "Undo");
 }
 
@@ -4179,9 +4223,15 @@ void paint(SwoftyPaint *p, void *)
     }
     if (st.in_replay && open) {
         std::lock_guard<std::recursive_mutex> lk(g_seq_mx);
-        if (int want = g_select_shot.exchange(-2); want >= -1)
-            g_shot = want;
         cine::Edit &ed = g_edit;
+        if (int want = g_select_shot.exchange(-2); want >= -1) {
+            // a shot picked by the program (a new shot, a jump to a key, select_shot): it alone is selected. Left
+            // as it was, a shot clicked earlier stayed selected: drags moved both (held by the other's
+            // neighbours) and clicks didn't clear it (owner's bug, cleared by a Shift-click)
+            g_shot = want;
+            for (int i = 0; i < int(ed.shots.size()); i++)
+                ed.shots[size_t(i)].selected = i == want;
+        }
         if (g_hist_reset && !g_dirty)
             history_commit();  // a fresh edit: history starts here
         bool keys_ok = !g_ui.edit;
@@ -4951,8 +5001,9 @@ int run_ffmpeg(const std::wstring &exe, const std::wstring &args, const std::wst
     return code;
 }
 
-// The file extension of a render format (render_format): H.264 in .mp4, ProRes in .mov.
-const wchar_t *render_ext(int format) { return format == 0 ? L".mp4" : L".mov"; }
+// The file extension of a render format (render_format): H.264 and H.265 in .mp4, ProRes in .mov.
+bool render_is_mp4(int format) { return format == 0 || format == 3; }
+const wchar_t *render_ext(int format) { return render_is_mp4(format) ? L".mp4" : L".mov"; }
 
 // Finishes the files on a worker: waits for the video encode, then joins the sound to it (the WAV cut `offset`
 // seconds in: where the first frame's replay moment is, plus the user's render_audio_offset) and removes the
@@ -4979,8 +5030,11 @@ void render_finish_files(std::wstring base, std::wstring ffmpeg, int frames, boo
             return;
         }
         if (with_audio) {
-            // H.264: AAC in .mp4. ProRes: uncompressed 24-bit PCM in .mov, as editors expect with it.
-            const wchar_t *acodec = format == 0 ? L"-c:a aac -b:a 320k -movflags +faststart" : L"-c:a pcm_s24le";
+            // H.264 / H.265: AAC in .mp4 (H.265 keeps the hvc1 tag through the copy, for Apple players). ProRes:
+            // uncompressed 24-bit PCM in .mov, as editors expect with it.
+            const wchar_t *acodec = format == 3   ? L"-c:a aac -b:a 320k -tag:v hvc1 -movflags +faststart"
+                                    : format == 0 ? L"-c:a aac -b:a 320k -movflags +faststart"
+                                                  : L"-c:a pcm_s24le";
             wchar_t args[2048];
             swprintf(args, 2048,
                      L"-y -hide_banner -loglevel warning -i \"%ls\" -ss %.6f -i \"%ls\" -map 0:v "
@@ -5990,6 +6044,14 @@ void apply(void *vpm)
     if (c.select_shot >= 0 && c.select_shot != last_select && !g_cfg_first)
         g_select_shot = int(c.select_shot);
     last_select = c.select_shot;
+    static float last_dump = -1e9f;
+    if (last_dump == -1e9f)
+        last_dump = c.dump_tracks;  // a value already in the file doesn't fire at load
+    if (c.dump_tracks != last_dump) {
+        last_dump = c.dump_tracks;
+        size_t n = g_tracks.dump(g_dir + "\\tracks.csv");
+        swofty::log("[cinecam] dump_tracks: %zu samples written to tracks.csv", n);
+    }
     if (c.restart != g_last_restart) {
         std::lock_guard<std::recursive_mutex> lk(g_seq_mx);
         if (!g_edit.shots.empty())
@@ -6310,14 +6372,29 @@ int find_slots(uintptr_t base, const char *name, uintptr_t value, void ***out, i
     for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
         if (strncmp(reinterpret_cast<const char *>(sec->Name), name, IMAGE_SIZEOF_SHORT_NAME) != 0)
             continue;
-        auto *p = reinterpret_cast<uintptr_t *>(base + sec->VirtualAddress);
-        size_t count = sec->Misc.VirtualSize / sizeof(uintptr_t);
-        for (size_t k = 0; k < count; k++)
-            if (p[k] == value) {
-                if (n < max)
-                    out[n] = reinterpret_cast<void **>(p + k);
-                n++;
+        // Only the pages that are committed and readable: on the EA app's build the section has pages that aren't
+        // (a plain scan faulted at the first one, crashing the game at start: player report, 2026-11-05).
+        uintptr_t at = base + sec->VirtualAddress, end = at + sec->Misc.VirtualSize;
+        while (at < end) {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(reinterpret_cast<void *>(at), &mbi, sizeof mbi))
+                break;
+            uintptr_t rend = std::min(end, uintptr_t(mbi.BaseAddress) + mbi.RegionSize);
+            constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                                       PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+            if (mbi.State == MEM_COMMIT && (mbi.Protect & readable) && !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+                auto *p = reinterpret_cast<uintptr_t *>((at + 7) & ~uintptr_t(7));
+                for (; uintptr_t(p + 1) <= rend; p++)
+                    if (*p == value) {
+                        if (n < max)
+                            out[n] = reinterpret_cast<void **>(p);
+                        n++;
+                    }
             }
+            if (rend <= at)
+                break;
+            at = rend;
+        }
     }
     return n;
 }
@@ -6396,7 +6473,8 @@ void install()
     QueryPerformanceFrequency(&g_qpf);
     install_pad_hook();
     install_file_hook();
-    install_ray_hook();
+    if (g_globals_ok)  // its entry is a fixed address of build d873a1c8: on any other build it may not be readable
+        install_ray_hook();
     g_mute_state = 1;  // a freeze mute left over from a game closed while frozen: undo it once at start
     set_game_muted(false);
     if (g_globals_ok) {  // the ReplayDirector's update: the replay's own camera can follow the shot's car

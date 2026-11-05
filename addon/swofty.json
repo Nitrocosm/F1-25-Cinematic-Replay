@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "xsoul.cinematic-replay",
   "name": "Cinematic Replay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "xSoul",
   "description": "A keyframe camera editor for replays: car-anchored shots, free camera paths, Final Cut without HUD, and video renders with sound.",
   "license": "MIT",

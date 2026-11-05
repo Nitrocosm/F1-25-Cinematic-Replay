@@ -90,7 +90,7 @@ class Recorder {
     // Starts capturing `hwnd`'s client area (Windows Graphics Capture: the window's own image, even when covered;
     // else, or with `screen_only`, the monitor it is on) and ffmpeg writing `out`. All capture work runs on the
     // recorder's own thread. blur > 1: every `blur` captures are averaged into one output frame (motion blur).
-    // `format`: 0 H.264 (crf), 1 ProRes 422 HQ, 2 ProRes 4444 XQ (both 10-bit, for grading in post).
+    // `format`: 0 H.264 (crf), 1 ProRes 422 HQ, 2 ProRes 4444 XQ (both 10-bit, for grading in post), 3 H.265 (crf).
     bool start(HWND hwnd, int fps, int crf, const std::wstring &ffmpeg, const std::wstring &out, std::string &err,
                int blur = 1, bool screen_only = false, int format = 0)
     {
@@ -393,6 +393,11 @@ class Recorder {
             swprintf(enc, 256, L"-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le");
         else if (format_ == 2)
             swprintf(enc, 256, L"-c:v prores_ks -profile:v 5 -vendor apl0 -pix_fmt yuv444p10le");
+        else if (format_ == 3)  // H.265: x265's CRF scale sits about 4 above x264's for the same look; hvc1 for Apple
+            swprintf(enc, 256,
+                     L"-c:v libx265 -preset medium -crf %d -pix_fmt yuv420p -tag:v hvc1 -x265-params log-level=error "
+                     L"-movflags +faststart",
+                     std::min(51, crf + 4));
         else
             swprintf(enc, 256, L"-c:v libx264 -preset slow -crf %d -pix_fmt yuv420p -movflags +faststart", crf);
         wchar_t args[2048];
