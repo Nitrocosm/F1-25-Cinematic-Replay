@@ -177,7 +177,8 @@ struct Config {
     int render_fps = 60;          // Render: output frames per second
     int render_settle = 12;       // Render: rendered frames each output frame is held for before it is captured
     int render_crf = 16;          // Render: x264 quality (lower = better, bigger)
-    int render_format = 0;        // Render: 0 H.264 (.mp4), 1 ProRes 422 HQ (.mov), 2 ProRes 4444 XQ (.mov), 3 H.265 (.mp4)
+    int render_format = 3;        // Render: 0 H.264 (.mp4), 1 ProRes 422 HQ (.mov), 2 ProRes 4444 XQ (.mov), 3 H.265 (.mp4)
+    int settings_version = 0;     // the one-time setting changes of updates already applied (migrate_settings)
     bool render_audio = true;     // Render: a real-time sound pass after the video, joined into the file
     int render_blur = 1;          // Render: motion blur samples per frame (1 = off; 4, 8, 16)
     bool render_screen_capture = false; // Render: capture the screen instead of the window (the game must stay in front)
@@ -289,6 +290,7 @@ void load_config()
         else if (k == "render_settle") c.render_settle = std::clamp(int(f), 8, 60);
         else if (k == "render_crf") c.render_crf = std::clamp(int(f), 0, 51);
         else if (k == "render_format") c.render_format = std::clamp(int(f), 0, 3);
+        else if (k == "settings_version") c.settings_version = int(f);
         else if (k == "render_dir") c.render_dir = v;
         else if (k == "render_audio") c.render_audio = f != 0;
         else if (k == "render_blur") c.render_blur = std::clamp(int(f), 1, 32);
@@ -4912,9 +4914,20 @@ struct RenderJob {
     ULONGLONG hold_until;     // sound pass: the end of the load hold (GetTickCount64)
     float last_t, drift;      // sound pass: last replay time; worst lag of the replay behind real time (s)
     double expect;            // sound pass: real seconds the replay should have taken since the edit's start
+    // History resets after each step (the camera's cut flag). In the hold frames the cars stand still, so the game's
+    // TAA takes them for scenery: where a car stood before the step, its old image stayed in the history and showed
+    // as a see-through second car one step behind (frames right after a reset had none; live render 2026-11-05).
+    // The resets last until the replay clock has moved off `cut_from_t`, then `cut_left` frames more (the GPU runs a
+    // frame or two behind); the settle frames after them rebuild the anti-aliasing from the new state only.
+    int cut_left, cut_wait;
+    float cut_from_t;
     HWND hwnd;
     std::wstring base, ffmpeg;  // output path without the extension; ffmpeg.exe
 } g_render;
+// The edit a render works from: a copy taken when it starts, used by the camera for the whole render (the video
+// pass and the sound pass), so switching or reloading the edit mid-render can't reach the video. It once did: a
+// test script switched the edit for 3 s and 15 frames showed the game's own camera (2026-11-05). Camera thread.
+cine::Edit g_render_edit;
 render::Recorder g_rec;
 audiocap::Recorder g_audio;
 
@@ -5108,6 +5121,7 @@ void render_end(const Replay &r, bool ok, const std::string &why)
             }
     }
     R.on = false;
+    g_render_edit = {};  // the camera follows the live edit again
     g_want_rs_state = 2;
     finish_final_cut(r);
     swofty::log("[cinecam] render %s after %d frame(s): %s", ok ? "done" : "stopped", R.frame, why.c_str());
@@ -5167,6 +5181,7 @@ void render_start(const Replay &r, float from, float to)
         }
         s = g_edit.start();
         e = g_edit.end();
+        g_render_edit = g_edit;  // what this render will show, whatever happens to g_edit meanwhile
     }
     if (to > from + 0.05f) {
         s = from;
@@ -5248,6 +5263,17 @@ void trace_row(std::string &out, const char *head, const cine::Cars &cars)
     out += '\n';
 }
 
+// After a step or a seek: the camera sends history resets until the replay has moved, and 2 frames more.
+void render_reset_history(const Replay &r)
+{
+    g_render.cut_left = 3;  // the frame the move shows in, then 2 for the GPU's lag
+    g_render.cut_wait = 0;
+    g_render.cut_from_t = r.t;
+}
+
+// The camera's cut flag for this frame (camera thread, before render_tick): a render is resetting the history.
+bool render_cut_now() { return g_render.on && g_render.phase == 2 && g_render.cut_left > 0; }
+
 // One game frame of the render (camera thread, after the camera is written). `speed` = the shot's replay speed.
 void render_tick(const Replay &r, float speed, const cine::Cars &cars)
 {
@@ -5318,6 +5344,7 @@ void render_tick(const Replay &r, float speed, const cine::Cars &cars)
         R.phase = 2;
         R.hold = 0;
         R.waiting = false;
+        render_reset_history(r);
         return;
     }
     if (r.state != 5) {  // something put the replay back to normal play: keep it stepped
@@ -5325,6 +5352,12 @@ void render_tick(const Replay &r, float speed, const cine::Cars &cars)
         return;
     }
     if (!R.waiting) {
+        if (R.cut_left > 0) {  // still resetting the history (see RenderJob::cut_left); the settle count waits
+            if (std::fabs(r.t - R.cut_from_t) > 1e-6f || ++R.cut_wait > 10)
+                R.cut_left--;
+            R.hold = 0;
+            return;
+        }
         R.hold++;
         if (R.hold >= R.settle && (g_rec.window_capture() || GetForegroundWindow() == R.hwnd)) {
             // The first frame: the stepped seek has landed off the edit's start before (0.5 s late, live), so
@@ -5336,6 +5369,7 @@ void render_tick(const Replay &r, float speed, const cine::Cars &cars)
                 *reinterpret_cast<volatile float *>(r.rs + 0x28) = 0;
                 R.reseeks++;
                 R.hold = 0;
+                render_reset_history(r);
                 return;
             }
             if (R.cap == 0)
@@ -5372,6 +5406,7 @@ void render_tick(const Replay &r, float speed, const cine::Cars &cars)
         }
         R.time += step;
         *reinterpret_cast<volatile float *>(r.rs + 0x28) = step;
+        render_reset_history(r);
     }
 }
 
@@ -6151,7 +6186,7 @@ void apply(void *vpm)
     cine::Edit ed;
     {
         std::lock_guard<std::recursive_mutex> lk(g_seq_mx);
-        ed = g_edit;
+        ed = g_render.on ? g_render_edit : g_edit;  // a render shows the edit it started with
     }
     bool watch = (editor && !fly) || preview || (!editor && c.mode == 2);
     if (preview && r.t <= ed.end())
@@ -6164,7 +6199,8 @@ void apply(void *vpm)
         if (auto v = cine::evaluate_edit(ed, r.t, cars)) {
             // a new shot is a hard cut only if the view jumps (a split shot plays on without one)
             bool jump = cine::len(v->eye - g_shown.eye) > 1.5f || std::fabs(cine::qdot(v->q, g_shown.q)) < 0.9976f;
-            write_view(entry, v->eye, v->q, v->fov, !g_overriding || (v->shot != g_last_shot && jump));
+            write_view(entry, v->eye, v->q, v->fov,
+                       !g_overriding || (v->shot != g_last_shot && jump) || render_cut_now());
             shot = v->shot;
             speed = v->speed;
             overriding = true;
@@ -6189,6 +6225,8 @@ void apply(void *vpm)
         }
     }
     g_last_shot = shot;
+    if (!overriding && render_cut_now())  // a gap in the edit renders the game's own camera: its history too
+        reinterpret_cast<uint8_t *>(entry + kCam)[0xa6] = 1;
     // The game's audio state: while we drive the camera, the replay's own camera is kept in car-camera mode (live
     // engines; TV mode plays recorded pass-bys and turns the engines down), on the car it already follows. It never
     // changes car: a change is audible. The listener itself follows our camera (move_listener).
@@ -6439,12 +6477,30 @@ void setup_dirs()
     CopyFileA((g_addon_dir + "\\cinecam.cfg").c_str(), (g_dir + "\\cinecam.cfg").c_str(), TRUE);
 }
 
+// One-time setting changes that come with an update. `settings_version` in the live cinecam.cfg records the ones
+// already applied, so each runs once per user: what they choose in Options afterwards is kept.
+//   2 (1.0.2): H.264 becomes H.265, the new default format (ProRes is left alone).
+constexpr int kSettingsVersion = 2;
+void migrate_settings()
+{
+    FILETIME ft{};
+    if (g_cfg.settings_version >= kSettingsVersion || !file_time(g_dir + "\\cinecam.cfg", ft))
+        return;  // done before, or no live config (writing one here would stop the template from being copied)
+    if (g_cfg.settings_version < 2 && g_cfg.render_format == 0) {
+        set_cfg_value("render_format", "3");
+        swofty::log("[cinecam] settings: render format H.264 -> H.265, the new default (once; Options can set it back)");
+    }
+    set_cfg_value("settings_version", std::to_string(kSettingsVersion));
+    load_config();  // the file changed: read it again
+}
+
 void install()
 {
     const SwoftyApi *api = swofty::api;
     g_base = api->module_base();
     setup_dirs();
     load_config();
+    migrate_settings();
 
     uintptr_t fn = 0;
     int n = api->scan(".xtls", kVpmUpdatePattern, &fn);

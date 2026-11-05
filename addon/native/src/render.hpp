@@ -393,9 +393,11 @@ class Recorder {
             swprintf(enc, 256, L"-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le");
         else if (format_ == 2)
             swprintf(enc, 256, L"-c:v prores_ks -profile:v 5 -vendor apl0 -pix_fmt yuv444p10le");
-        else if (format_ == 3)  // H.265: x265's CRF scale sits about 4 above x264's for the same look; hvc1 for Apple
+        else if (format_ == 3)  // H.265: x265's CRF scale sits about 4 above x264's for the same look; hvc1 for Apple.
+            // Preset fast: 11.6 fps here against 6.6 for medium (1080p, game running), at about the same size; medium
+            // was the slowest part of a render (2026-11-05 benchmark, PROJECT.md).
             swprintf(enc, 256,
-                     L"-c:v libx265 -preset medium -crf %d -pix_fmt yuv420p -tag:v hvc1 -x265-params log-level=error "
+                     L"-c:v libx265 -preset fast -crf %d -pix_fmt yuv420p -tag:v hvc1 -x265-params log-level=error "
                      L"-movflags +faststart",
                      std::min(51, crf + 4));
         else

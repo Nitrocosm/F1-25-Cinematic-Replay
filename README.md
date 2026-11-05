@@ -38,8 +38,8 @@ A Swofty Launcher addon by xSoul.
 - **Editing:** undo / redo, split, snapping, multi-select, copy / paste, and several edits per replay.
 - **Sound from the camera:** you hear the replay from where the camera is.
 - **Final Cut:** plays the edit with every HUD hidden, with optional letterbox bars.
-- **Render:** saves the edit as a video file (H.264, H.265 for smaller files, or ProRes for grading) with the
-  game's sound.
+- **Render:** saves the edit as a video file (H.265 by default, H.264 for older devices, or ProRes for grading)
+  with the game's sound.
   - Choose the whole edit, the selected shots, or an in / out range.
   - Frame by frame, so the video is smooth whatever your frame rate.
   - Optional motion blur.
@@ -91,7 +91,7 @@ also [CONTROLS.md](CONTROLS.md)). **U** hides the editor for a moment so you can
 - Keep the game open while it renders: other windows may cover it, but **don't minimize it**. **F9** cancels.
 - Files go to your Videos folder, in `Cinematic Replay` (**Options > Open folder**; `render_dir` in
   `cinecam.cfg` changes it).
-- **Options** (in the timeline bar) sets the frame rate, the format (H.264, H.265, ProRes 422 HQ, ProRes 4444), quality,
+- **Options** (in the timeline bar) sets the frame rate, the format (H.265, the default; H.264; ProRes 422 HQ; ProRes 4444), quality,
   motion blur, the shutter, and the sound. ProRes files are large: about 60 MB per second at 1080p for 422 HQ.
 
 ## Your files
