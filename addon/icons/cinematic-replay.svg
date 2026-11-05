@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+  <!-- Cinematic Replay: a keyframe diamond in motion. Background and style as Swofty's own addon icons. -->
+  <rect width="500" height="500" fill="#15171c"/>
+  <!-- speed streaks trailing the diamond -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-width="26">
+    <path d="M70 196H210" stroke-opacity="0.35"/>
+    <path d="M46 256H200" stroke-opacity="0.65"/>
+    <path d="M94 316H210" stroke-opacity="0.35"/>
+  </g>
+  <!-- the keyframe diamond: white rim, red fill, dark inner diamond (the editor's "keyed here" marker) -->
+  <g transform="translate(318 256) rotate(45)">
+    <rect x="-108" y="-108" width="216" height="216" rx="26" fill="#ffffff"/>
+    <rect x="-90" y="-90" width="180" height="180" rx="18" fill="#e10600"/>
+    <rect x="-34" y="-34" width="68" height="68" rx="9" fill="#15171c"/>
+  </g>
+</svg>

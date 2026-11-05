@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "xsoul.cinematic-replay",
+  "name": "Cinematic Replay",
+  "version": "1.0.0",
+  "author": "xSoul",
+  "description": "A keyframe camera editor for replays: car-anchored shots, free camera paths, Final Cut without HUD, and video renders with sound.",
+  "license": "MIT",
+  "icon": "icons/cinematic-replay.png",
+  "kind": ["native"],
+  "experimental_features": ["overlay"],
+  "compat": { "game": "f1_25", "game_builds": ["=25251167"] },
+  "requires": [{ "id": "swofty.core", "version": ">=0.2.11" }],
+  "operations": {
+    "native": [{ "dll": "native/cinecam.dll", "files": ["cinecam.cfg"] }]
+  }
+}

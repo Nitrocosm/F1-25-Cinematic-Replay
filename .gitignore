@@ -1,0 +1,16 @@
+# build output
+addon/native/build/
+addon/native/cinecam.dll
+dist/
+
+# private development notes and tools (kept locally, not published)
+CLAUDE.md
+PROJECT.md
+docs/
+research/
+work/
+data/
+.claude/
+
+__pycache__/
+*.pyc
