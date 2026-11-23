@@ -55,6 +55,7 @@
 #include <swofty/overlay_ui.hpp>
 
 #include "shots.hpp"
+#include "world_lines.hpp"
 #include "render.hpp"
 #include "audio_capture.hpp"
 
@@ -110,27 +111,75 @@ constexpr const char *kVpmUpdatePattern =
     "41 57 41 56 41 55 41 54 56 57 55 53 48 81 EC 38 01 00 00 C5 78 29 BC 24 20 01 00 00 C5 78 29 B4 24 10 01 00 00 "
     "C5 78 29 AC 24 00 01 00 00 C5 78 29 A4 24 F0 00 00 00 C5 78 29 9C 24 E0 00 00 00 C5 78 29 94 24 D0 00 00 00 "
     "C5 79 7F 8C 24 C0 00 00 00"; // the first 37 bytes alone match 13 functions
-constexpr uintptr_t kVpmUpdateRva = 0x440a4c0;
 constexpr int kVpmUpdateSlot = 9;
-// globals of build d873a1c8
-constexpr uintptr_t kReplaySystemRva = 0x6ce5178;  // GameReplaySystem*
-constexpr uintptr_t kGameManagerRva = 0x604c2c8;   // g_Game_Manager
-constexpr uintptr_t kVehicleCountRva = 0x6ce86dc;  // g_Sess_VehicleCount (u8)
-constexpr uintptr_t kVehicleTableRva = 0x6ce86e0;  // g_Sess_VehicleTable[N]
-constexpr uintptr_t kVtCarPhysics2 = 0x5bf79b0, kVtSafetyCar = 0x58552f0, kVtVehicle = 0x5bf73a0;
+// The build-specific addresses (RVAs) below are build 25251167's (d873a1c8); install() switches them to another
+// known build's when ViewportManager::Update sits where that build has it (pick_build, kBuilds). For a new game
+// update, research/port_build.py finds them all in the new exe.
+uintptr_t kVpmUpdateRva = 0x440a4c0;
+uintptr_t kReplaySystemRva = 0x6ce5178;  // GameReplaySystem*
+uintptr_t kGameManagerRva = 0x604c2c8;   // g_Game_Manager
+uintptr_t kVehicleCountRva = 0x6ce86dc;  // g_Sess_VehicleCount (u8)
+uintptr_t kVehicleTableRva = 0x6ce86e0;  // g_Sess_VehicleTable[N]
+// the car components' vtables slot_target accepts (per build too: a wrong one rejects every car)
+uintptr_t kVtCarPhysics2 = 0x5bf79b0, kVtSafetyCar = 0x58552f0, kVtVehicle = 0x5bf73a0;
 // Trackside pass-by sounds (checked live): the per-car
 // audio update reaches the audio manager as *(*(this+0xdf0)+0xa0); the manager's pass-by system is at +0xc10
 // (it points back: *(sys+0x48)+0xc10 == sys) and keeps Audio.passbySystem_enabled in byte +1.
-constexpr uintptr_t kCarAudioUpdateRva = 0x9fa9f0;
+uintptr_t kCarAudioUpdateRva = 0x9fa9f0;
 // AudioCameraListener: vtable 0x145a8a230. Slot 17 (0x1443ea6a0,
 // (listener, ctx)) runs inside Camera::Update, reads the camera's working state ctx[2]: eye at +0x120, quat at
 // +0x140, builds the listener matrix and hands it to the audio manager right away. We wrap that slot and swap our
 // view into the working state for the call.
-constexpr uintptr_t kListenerUpdateSlotRva = 0x5a8a2b8, kListenerUpdateRva = 0x43ea6a0;
+uintptr_t kListenerUpdateSlotRva = 0x5a8a2b8, kListenerUpdateRva = 0x43ea6a0;
 // The replay's own camera follows the car of the shot on screen, so the game's sound (listener and mix) is that
 // car's: ReplayDirector update slot 25, and "switch to car N"
 // 0x1406ae650(helper = director+0x70, u8 N, u8 mode 1 = car camera, cam 0). helper+0x14 = focus car, +0x15 = mode.
-constexpr uintptr_t kDirectorUpdateSlotRva = 0x57ce738, kDirectorUpdateRva = 0x2c08360, kSwitchCarRva = 0x6ae650;
+uintptr_t kDirectorUpdateSlotRva = 0x57ce738, kDirectorUpdateRva = 0x2c08360, kSwitchCarRva = 0x6ae650;
+uintptr_t kRaycastRva = 0x40c0f10;            // see install_ray_hook
+uintptr_t kRsSetStateLockedRva = 0x45c74b0;   // ReplaySystem::setState with its lock (L1)
+
+// Every build the addresses are known for. Columns in the order of the variables above.
+struct BuildRvas {
+    const char *name;
+    uintptr_t vpm_update, replay_system, game_manager, vehicle_count, vehicle_table, car_audio_update, listener_slot,
+        listener_update, director_slot, director_update, switch_car, raycast, rs_set_state_locked, vt_car_physics2,
+        vt_safety_car, vt_vehicle;
+};
+constexpr BuildRvas kBuilds[] = {
+    {"25251167", 0x440a4c0, 0x6ce5178, 0x604c2c8, 0x6ce86dc, 0x6ce86e0, 0x9fa9f0, 0x5a8a2b8, 0x43ea6a0, 0x57ce738,
+     0x2c08360, 0x6ae650, 0x40c0f10, 0x45c74b0, 0x5bf79b0, 0x58552f0, 0x5bf73a0},
+    // the update of 2026-11-16 (research/port_build.py: every address one unique match; globals all +0x2000; the
+    // vtables by their ported entries, the vehicle one also by its references)
+    {"26566308", 0x440ca90, 0x6ce7178, 0x604e2c8, 0x6cea6dc, 0x6cea6e0, 0x9faa40, 0x5a8c438, 0x43ecc70, 0x57d0878,
+     0x2c0a8f0, 0x6ae690, 0x40c34e0, 0x45c9d20, 0x5bf9b70, 0x5857450, 0x5bf9560},
+};
+
+// The known build with ViewportManager::Update at this RVA, its addresses put in place; null when none is.
+const BuildRvas *pick_build(uintptr_t vpm_rva)
+{
+    for (const BuildRvas &b : kBuilds) {
+        if (b.vpm_update != vpm_rva)
+            continue;
+        kVpmUpdateRva = b.vpm_update;
+        kReplaySystemRva = b.replay_system;
+        kGameManagerRva = b.game_manager;
+        kVehicleCountRva = b.vehicle_count;
+        kVehicleTableRva = b.vehicle_table;
+        kCarAudioUpdateRva = b.car_audio_update;
+        kListenerUpdateSlotRva = b.listener_slot;
+        kListenerUpdateRva = b.listener_update;
+        kDirectorUpdateSlotRva = b.director_slot;
+        kDirectorUpdateRva = b.director_update;
+        kSwitchCarRva = b.switch_car;
+        kRaycastRva = b.raycast;
+        kRsSetStateLockedRva = b.rs_set_state_locked;
+        kVtCarPhysics2 = b.vt_car_physics2;
+        kVtSafetyCar = b.vt_safety_car;
+        kVtVehicle = b.vt_vehicle;
+        return &b;
+    }
+    return nullptr;
+}
 
 constexpr size_t kCam = 0x20; // camera state inside a viewport entry
 
@@ -168,6 +217,8 @@ struct Config {
     bool editor_hides_hud = true;   // the game's replay HUD is hidden while the editor is open
     int key_curve = 0;              // the curve new slider keys get: 0 smooth, 1 linear (Options)
     bool check_clipping = true;     // the 3D path shows where it goes into the track or a barrier (Options)
+    bool world_lines = true;        // the path lines drawn inside the game's picture (behind walls), when the pass runs
+    float world_near = 0.05f;       // the near plane of the game's projection (the depth test's scale; we write 0.05)
     float final_cut = 0;          // changed: start Final Cut (like its button)
     float render = 0;             // changed: start a render (like its button)
     float speed_trace = 0;        // changed: log the followed car's speed 5x a second for the next 120 s of replay
@@ -276,6 +327,8 @@ void load_config()
         else if (k == "editor_hides_hud") c.editor_hides_hud = f != 0;
         else if (k == "key_curve") c.key_curve = f >= 0.5f ? 1 : 0;
         else if (k == "check_clipping") c.check_clipping = f != 0;
+        else if (k == "world_lines") c.world_lines = f != 0;
+        else if (k == "world_near") c.world_near = std::clamp(f, 0.001f, 10.0f);
         else if (k == "select_shot") c.select_shot = f;
         else if (k == "dump_tracks") c.dump_tracks = f;
         else if (k == "final_cut") c.final_cut = f;
@@ -812,16 +865,30 @@ bool y_injection_down()
     return g_y_phase == 1;
 }
 
+// Set once a press was injected with no controller on slot 0: from then on slot 0 reports an idle controller instead
+// of none. Before (to 1.0.2) it vanished again after the presses, and the game took that as a disconnect: "controller
+// disconnected" and the replay paused (owner, 2026-11-17, wheel and pedals only: they're DirectInput, slot 0 empty).
+std::atomic<bool> g_fake_pad{false};
+
 DWORD WINAPI xget_hook(DWORD user, XInputState *s)
 {
     DWORD r = g_xget_orig(user, s);
+    if (user == 0 && s && r != ERROR_SUCCESS && g_fake_pad.load()) {  // keep the injected controller connected
+        static DWORD idle_packet = 0x20000000;
+        memset(s, 0, sizeof *s);
+        s->packet = idle_packet;  // unchanged packet: nothing new from it
+        r = ERROR_SUCCESS;
+    }
     if (user == 0 && s) {
         bool active = g_y_phase != 0 || g_y_presses.load() > 0;
         if (active) {
             bool down = y_injection_down();
-            if (r != ERROR_SUCCESS) {  // no controller: an idle one while pressing
+            if (r != ERROR_SUCCESS) {  // no controller: an idle one, kept from now on (g_fake_pad)
                 memset(s, 0, sizeof *s);
                 r = ERROR_SUCCESS;
+                if (!g_fake_pad.exchange(true))
+                    swofty::log("[cinecam] pad: no controller on slot 0; an idle one stays there from now on, so the "
+                                "game sees no disconnect after the replay HUD presses");
             }
             static DWORD packet = 0x40000000;
             if (down)
@@ -958,7 +1025,6 @@ void install_file_hook()
 // trampoline. The entry's bytes are checked first, so on any other build nothing is patched.
 using Raycast_t = uint64_t (*)(void *world, const float *from, const float *to, uint8_t layer, float *fraction,
                                float *normal, void *extra);
-constexpr uintptr_t kRaycastRva = 0x40c0f10;
 Raycast_t g_ray_tramp;
 std::atomic<void *> g_ray_world{nullptr};
 std::atomic<uint64_t> g_ray_calls{0}, g_ray_layers{0};
@@ -1163,7 +1229,7 @@ struct Status {
     // the settings, for the Options pane
     int o_fps, o_settle, o_crf, o_blur, o_format;
     float o_shutter;
-    bool o_audio, o_listener, o_follow, o_passby, o_hidehud, o_clip;
+    bool o_audio, o_listener, o_follow, o_passby, o_hidehud, o_clip, o_world;
     int o_keycurve;
     float o_offset, o_wait, o_preroll;
     char o_dir[260];  // where renders go (UTF-8)
@@ -1676,20 +1742,122 @@ void dot3(SwoftyPaint *p, const Projector &pr, V3 a, float radius, uint32_t rgba
     ov::circle(p, x, y, radius, with_alpha(rgba, depth_alpha(c.z) * (rgba & 0xff) / 255.0f));
 }
 
-// A key: a small camera frustum where it stands, looking where it looks.
-void frustum3(SwoftyPaint *p, const Projector &pr, const cine::PathKey &k, float width, uint32_t rgba)
+// A key's frustum as 9 world segments: a small camera where it stands, looking where it looks, with a bar on top
+// (which way is up). aspect: the picture's height over its width.
+void frustum_lines(const cine::PathKey &k, float aspect, V3 (&out)[9][2])
 {
     V3 r, up, back;
     cine::cols_from_quat(k.q, r, up, back);
     const float L = 1.6f;
-    float hw = std::tan(std::clamp(k.fov, 5.0f, 140.0f) * cine::kDeg / 2) * L, hh = hw * pr.aspect;
+    float hw = std::tan(std::clamp(k.fov, 5.0f, 140.0f) * cine::kDeg / 2) * L, hh = hw * aspect;
     V3 c = k.eye + back * -L;
     V3 corner[4] = {c + r * hw + up * hh, c - r * hw + up * hh, c - r * hw - up * hh, c + r * hw - up * hh};
     for (int i = 0; i < 4; i++) {
-        line3(p, pr, k.eye, corner[i], width, rgba);
-        line3(p, pr, corner[i], corner[(i + 1) % 4], width, rgba);
+        out[i][0] = k.eye, out[i][1] = corner[i];
+        out[4 + i][0] = corner[i], out[4 + i][1] = corner[(i + 1) % 4];
     }
-    line3(p, pr, corner[0] + up * (hh * 0.6f), corner[1] + up * (hh * 0.6f), width, rgba);  // which way is up
+    out[8][0] = corner[0] + up * (hh * 0.6f), out[8][1] = corner[1] + up * (hh * 0.6f);
+}
+
+void frustum3(SwoftyPaint *p, const Projector &pr, const cine::PathKey &k, float width, uint32_t rgba)
+{
+    V3 seg[9][2];
+    frustum_lines(k, pr.aspect, seg);
+    for (auto &s : seg)
+        line3(p, pr, s[0], s[1], width, rgba);
+}
+
+// ----- the path lines inside the game's picture (fx/world_lines.hlsl, world_lines.hpp) -----------------------------
+// The camera thread sends the path view's lines every frame, projected with the camera the game renders; the
+// addon's post-process pass draws them behind what the game drew in front of them. While the pass runs and takes
+// them all (g_world_on), the overlay leaves those lines out; else it draws them as before.
+//
+// swofty/postfx.hpp's set_data, looked up the same way, so this builds against SDKs without that header: 0 = our pass
+// runs and reads the bytes, 1 = kept but the pass isn't running (off, over its budget), -4 = this profile has no such
+// pass (its build left it out), other negatives = refused, -10 = this core has no such call.
+int postfx_set_data(const void *data, uint32_t size)
+{
+    using Fn = int (*)(const char *, const char *, const void *, uint32_t);
+    static Fn fn = [] {
+        HMODULE core = GetModuleHandleW(L"swofty_core.dll");
+        return core ? reinterpret_cast<Fn>(GetProcAddress(core, "SwoftyCorePostfxSetData")) : nullptr;
+    }();
+    return fn ? fn("xsoul.cinematic-replay", "world_lines", data, size) : -10;
+}
+
+std::atomic<bool> g_world_on{false};
+std::atomic<float> g_paint_w{0}, g_paint_h{0}, g_paint_s{1};  // the overlay's size and UI scale, from its paint
+std::atomic<ULONGLONG> g_paths_painted{0};                     // when the overlay last drew the path view
+bool g_world_sent;                                             // camera thread: the pass has lines to take away
+
+// Camera thread, every frame: the path view's lines and key frustums for the pass, as the overlay would draw them
+// (widths in its pixels, its colours), projected with view, the camera the game renders this frame. Sent only while
+// the overlay draws the path view; taken away when it stops. The selected shot's path goes first: what doesn't fit
+// in 60 KB stays with the overlay (all of it, then: the overlay draws the lot).
+void send_world_lines(bool draw, const PathView &view)
+{
+    bool want = draw && g_cfg.world_lines && GetTickCount64() - g_paths_painted.load() < 250;
+    float W = g_paint_w.load(), H = g_paint_h.load(), s = g_paint_s.load();
+    if (!want || W < 16 || H < 16) {
+        if (g_world_sent)
+            postfx_set_data(nullptr, 0);
+        g_world_sent = false;
+        g_world_on = false;
+        return;
+    }
+    std::vector<cine::wl::Seg> segs;
+    {
+        std::lock_guard<std::mutex> lk(g_path_mx);
+        std::vector<const PathDraw *> order;
+        for (const auto &pd : g_path_draw)
+            if (pd.selected)
+                order.push_back(&pd);
+        for (const auto &pd : g_path_draw)
+            if (!pd.selected)
+                order.push_back(&pd);
+        for (const PathDraw *pd : order) {
+            uint32_t col = pd->selected ? 0xffffffff : (shot_colour(pd->type) | 0xff);
+            float w = s * (pd->selected ? 7 : 5);
+            const auto &pts = pd->ps.pts;
+            const auto &clip = pd->ps.clip;
+            for (size_t i = 1; i < pts.size(); i++) {
+                uint8_t cl = i < clip.size() ? clip[i] : 0;
+                segs.push_back({pts[i - 1], pts[i], cl ? w + s * 2 : w, cl == 2 ? 0xff3b30ffu : cl == 1 ? 0xffa726ffu : col,
+                                s * 2, i > 1});
+            }
+            for (const auto &k : pd->ps.keys) {
+                V3 seg[9][2];
+                frustum_lines(k, H / W, seg);
+                for (auto &l : seg)
+                    segs.push_back({l[0], l[1], s * (k.selected ? 5.0f : 3.5f), k.selected ? kAccent : 0xe8e8f0ffu, s * 1.5f});
+            }
+        }
+    }
+    cine::wl::View v{view.eye, view.q, view.fov, W, H, g_cfg.world_near};
+    cine::wl::Packed pk = cine::wl::pack(segs, v, 60 * 1024);
+    bool all = pk.kept == segs.size() && !pk.bytes.empty();
+    int r = all ? postfx_set_data(pk.bytes.data(), uint32_t(pk.bytes.size())) : postfx_set_data(nullptr, 0);
+    g_world_sent = all;
+    bool on = all && r == 0;
+    g_world_on = on;
+    // the log says where the lines went and why, each time that changes
+    static int said = 99;
+    int why = on ? 0 : !all ? 2 : r;
+    if (why != said) {
+        said = why;
+        if (why == 0)
+            swofty::log("[cinecam] path lines: drawn in the game's picture by the world_lines pass");
+        else if (why == 1)
+            swofty::log("[cinecam] path lines: in the overlay (the world_lines pass isn't running)");
+        else if (why == 2)
+            swofty::log("[cinecam] path lines: in the overlay (too many for the pass)");
+        else if (why == -10)
+            swofty::log("[cinecam] path lines: in the overlay (this launcher can't send data to passes)");
+        else if (why == -4)
+            swofty::log("[cinecam] path lines: in the overlay (this profile has no world_lines pass: its build left it out)");
+        else
+            swofty::log("[cinecam] path lines: in the overlay (the core refused the data: %d)", why);
+    }
 }
 
 // Path shaping on the selected shot, in the 3D view (one drag = one undo step):
@@ -1743,6 +1911,9 @@ void draw_paths(oui::Ui &u, SwoftyPaint *p, cine::Edit &ed)
     float W = 0, H = 0;
     ov::size(p, &W, &H);
     Projector pr(view, W, H);
+    g_paint_w = W, g_paint_h = H, g_paint_s = u.u(1);
+    g_paths_painted = GetTickCount64();
+    bool world = g_world_on.load();  // the pass draws the lines and frustums
     const auto &in = u.in;
     ov::Rect safe = ov::safe_area(p);
     float timeline_top = safe.y + safe.h - u.u(kTimelineH);
@@ -1935,12 +2106,14 @@ void draw_paths(oui::Ui &u, SwoftyPaint *p, cine::Edit &ed)
         uint32_t col = pd.selected ? 0xffffffff : (shot_colour(pd.type) | 0xff);
         const auto &pts = pd.ps.pts;
         float w = u.u(pd.selected ? 7 : 5);
-        for (size_t i = 1; i < pts.size(); i++)  // a dark outline first, so the line reads on bright track and sky
-            line3(p, pr, pts[i - 1], pts[i], w + u.u(4), 0x000000a0);
         const auto &clip = pd.ps.clip;
-        for (size_t i = 1; i < pts.size(); i++) {  // into the track / a barrier: red; skimming the ground: orange
-            uint8_t cl = i < clip.size() ? clip[i] : 0;
-            line3(p, pr, pts[i - 1], pts[i], cl ? w + u.u(2) : w, cl == 2 ? 0xff3b30ff : cl == 1 ? 0xffa726ff : col);
+        if (!world) {
+            for (size_t i = 1; i < pts.size(); i++)  // a dark outline first, so the line reads on bright track and sky
+                line3(p, pr, pts[i - 1], pts[i], w + u.u(4), 0x000000a0);
+            for (size_t i = 1; i < pts.size(); i++) {  // into the track / a barrier: red; skimming the ground: orange
+                uint8_t cl = i < clip.size() ? clip[i] : 0;
+                line3(p, pr, pts[i - 1], pts[i], cl ? w + u.u(2) : w, cl == 2 ? 0xff3b30ff : cl == 1 ? 0xffa726ff : col);
+            }
         }
         for (size_t i = 1; i < pts.size() && i < clip.size(); i++)  // where each red stretch begins
             if (clip[i] == 2 && clip[i - 1] != 2) {
@@ -1952,6 +2125,8 @@ void draw_paths(oui::Ui &u, SwoftyPaint *p, cine::Edit &ed)
             dot3(p, pr, t, u.u(5), 0xffffffff);
         }
         for (const auto &k : pd.ps.keys) {  // bold, on a dark outline like the path
+            if (world)
+                break;
             float fw = u.u(k.selected ? 5.0f : 3.5f);
             frustum3(p, pr, k, fw + u.u(3), 0x000000a0);
             frustum3(p, pr, k, fw, k.selected ? kAccent : 0xe8e8f0ff);
@@ -3730,7 +3905,7 @@ void options_pane(oui::Ui &u, SwoftyPaint *p, const Status &st, bool open)
         float format;
         bool hidehud;
         float keycurve;
-        bool clip;
+        bool clip, world;
     };
     static Vals v, saved;
     static bool fresh = true;
@@ -3758,6 +3933,7 @@ void options_pane(oui::Ui &u, SwoftyPaint *p, const Status &st, bool open)
         put("editor_hides_hud", v.hidehud, saved.hidehud);
         put("key_curve", std::round(v.keycurve), saved.keycurve);
         put("check_clipping", v.clip, saved.clip);
+        put("world_lines", v.world, saved.world);
         saved = v;
         changed_at = 0;
     };
@@ -3770,7 +3946,7 @@ void options_pane(oui::Ui &u, SwoftyPaint *p, const Status &st, bool open)
     if (fresh) {  // the file's values each time the pane opens
         v = {float(st.o_fps), float(st.o_settle), float(st.o_crf), st.o_offset * 1000, st.o_wait, st.o_preroll,
              st.letterbox, st.fade, float(st.o_blur), st.o_shutter, st.o_audio, st.o_listener, st.o_follow,
-             st.o_passby, float(st.o_format), st.o_hidehud, float(st.o_keycurve), st.o_clip};
+             st.o_passby, float(st.o_format), st.o_hidehud, float(st.o_keycurve), st.o_clip, st.o_world};
         saved = v;
         fresh = false;
     }
@@ -3848,6 +4024,7 @@ void options_pane(oui::Ui &u, SwoftyPaint *p, const Status &st, bool open)
     toggle("Hide the game's HUD while editing", v.hidehud);
     choice("New slider keys", v.keycurve, {{"Smooth", 0}, {"Linear", 1}});  // only keys made from now on
     toggle("Path: show where it clips into the track", v.clip);
+    toggle("Path: drawn in the world, faint behind walls", v.world);
     section("FINAL CUT");
     slider("Run-up before the first shot (black)", v.preroll, 0, 5, "%.1f s");
     choice("Letterbox", v.letterbox, {{"Off", 0}, {"1.85", 1.85f}, {"2.00", 2.0f}, {"2.39", 2.39f}});
@@ -4893,7 +5070,6 @@ void replay_check(const Replay &r)
 // photo-mode replay state (5) the replay advances by exactly RS+0x28 seconds once, then holds. Each output frame: hold `settle` rendered frames (the image settles), capture, then step speed / fps.
 std::atomic<int> g_want_rs_state{-1};  // camera thread -> director thread: setState (2 Play, 5 stepped)
 using SetState_t = void (*)(uintptr_t rs, uint32_t state, uint32_t notify);
-constexpr uintptr_t kRsSetStateLockedRva = 0x45c74b0;  // ReplaySystem::setState with its lock (L1)
 
 // Phases: 0 run-up, 1 to the stepped state, 2 video frames, 3 the sound pass (real time, recording the game's
 // audio), after which ffmpeg joins the two.
@@ -6130,7 +6306,12 @@ void apply(void *vpm)
     if ((g_frames % 120) == 0 || fslot == -2) {
         fslot = followed_slot();
         if (fslot != g_followed_slot) {
-            swofty::log("[cinecam] the replay follows car slot %d", fslot);
+            int readable = 0, n = slot_count();
+            for (int i = 0; i < n; i++)
+                readable += slot_target(i) != 0;
+            // with no slot: which link broke (after a game update: the target path or the car checks)
+            swofty::log("[cinecam] the replay follows car slot %d (followed target %p; %d of %d car slot(s) readable)",
+                        fslot, reinterpret_cast<void *>(followed_target()), readable, n);
             g_followed_slot = fslot;
         }
     }
@@ -6295,6 +6476,7 @@ void apply(void *vpm)
         s.o_hidehud = c.editor_hides_hud;
         s.o_keycurve = c.key_curve;
         s.o_clip = c.check_clipping;
+        s.o_world = c.world_lines;
         s.o_offset = c.render_audio_offset;
         s.o_wait = c.render_audio_wait;
         s.o_preroll = c.preroll;
@@ -6374,11 +6556,14 @@ void apply(void *vpm)
         PathView view{g_shown.eye, g_shown.q, g_shown.fov};
         if (draw && !overriding)  // the game's camera is on screen
             read_view(entry, view.eye, view.q, view.fov);
-        std::lock_guard<std::mutex> lk(g_path_mx);
-        g_path_valid = draw;
-        g_path_view = view;
-        if (resample)
-            g_path_draw.swap(fresh);
+        {
+            std::lock_guard<std::mutex> lk(g_path_mx);
+            g_path_valid = draw;
+            g_path_view = view;
+            if (resample)
+                g_path_draw.swap(fresh);
+        }
+        send_world_lines(draw, view);
     }
     if (overriding) {
         g_overrides++;
@@ -6408,7 +6593,10 @@ int find_slots(uintptr_t base, const char *name, uintptr_t value, void ***out, i
     auto *sec = IMAGE_FIRST_SECTION(nt);
     int n = 0;
     for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
-        if (strncmp(reinterpret_cast<const char *>(sec->Name), name, IMAGE_SIZEOF_SHORT_NAME) != 0)
+        // name null: every section that isn't code. The protector renames sections between builds (the vtables
+        // were in .xtext on 25251167, in .sdata on 26566308)
+        if (name ? strncmp(reinterpret_cast<const char *>(sec->Name), name, IMAGE_SIZEOF_SHORT_NAME) != 0
+                 : (sec->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0)
             continue;
         // Only the pages that are committed and readable: on the EA app's build the section has pages that aren't
         // (a plain scan faulted at the first one, crashing the game at start: player report, 2026-11-05).
@@ -6508,13 +6696,17 @@ void install()
         swofty::log("[cinecam] off: ViewportManager::Update signature has %d match(es) (need 1)", n);
         return;
     }
-    g_globals_ok = fn - g_base == kVpmUpdateRva;
-    if (!g_globals_ok)
-        swofty::log("[cinecam] ViewportManager::Update at base+0x%llx, not base+0x%llx: not build d873a1c8, the "
-                    "replay and car globals stay off (camera untouched)",
-                    (unsigned long long)(fn - g_base), (unsigned long long)kVpmUpdateRva);
+    const BuildRvas *build = pick_build(fn - g_base);
+    g_globals_ok = build != nullptr;
+    if (g_globals_ok)
+        swofty::log("[cinecam] game build %s (ViewportManager::Update at base+0x%llx)", build->name,
+                    (unsigned long long)(fn - g_base));
+    else
+        swofty::log("[cinecam] ViewportManager::Update at base+0x%llx: not a build this version knows, the replay and "
+                    "car globals stay off (camera untouched)",
+                    (unsigned long long)(fn - g_base));
     void **found[4];
-    int ns = find_slots(g_base, ".xtext", fn, found, 4);
+    int ns = find_slots(g_base, nullptr, fn, found, 4);
     if (ns != 1) {
         swofty::log("[cinecam] off: ViewportManager::Update is in %d table slot(s) (need 1)", ns);
         return;
@@ -6550,7 +6742,7 @@ void install()
     // the audio hooks, only when a setting asks for them at launch (both off: the game's audio is untouched)
     if (g_globals_ok && !g_cfg.recorded_passby) {  // the per-car audio update's vtable slot, for the pass-by switch
         void **aslots[4];
-        int na = find_slots(g_base, ".xtext", g_base + kCarAudioUpdateRva, aslots, 4);
+        int na = find_slots(g_base, nullptr, g_base + kCarAudioUpdateRva, aslots, 4);
         if (na == 1) {
             g_audio_orig = reinterpret_cast<void *>(g_base + kCarAudioUpdateRva);
             if (write_ptr(aslots[0], reinterpret_cast<void *>(&audio_update_stub)))

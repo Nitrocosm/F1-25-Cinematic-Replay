@@ -69,6 +69,10 @@ Where the path goes into the track or a barrier it turns **red** (a red dot wher
 shot in the timeline); within 30 cm of the ground it turns **orange**. The check uses the game's own collision
 and can be turned off in Options.
 
+When your Swofty Launcher lets post-process passes take data from addons, the path and the keys' frustums are
+drawn into the picture itself: where the track, a wall or a car is in front of them they show faint and dashed.
+Options, **Path: drawn in the world**, turns it off; without such a launcher they're drawn on top, as before.
+
 The inspector's **Reset position** puts the selected keys back where they were before they were first dragged;
 **Straighten bend** does the same for the picked handle's segment. New slider keys get the curve set in
 **Options** (Smooth or Linear); existing keys keep theirs.

@@ -1,6 +1,7 @@
 // Offline test of sequence.hpp: a fake car on a circle, a sequence mixing world, car and look-at keys.
 // Build and run: bash tests/run.sh
 #include "../native/src/shots.hpp"
+#include "../native/src/world_lines.hpp"
 
 #include <swofty/json.hpp>
 
@@ -464,6 +465,7 @@ int main()
     }
 
 #include "shots_tests.inc"
+#include "world_lines_tests.inc"
     // an anchor that can't resolve gives nothing (no garbage camera)
     Sequence bad = s;
     bad.keys[0].look_car_id = 7;

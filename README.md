@@ -47,8 +47,9 @@ A Swofty Launcher addon by xSoul.
 ## What you need
 
 - **Windows** 10 (version 2004 or newer) or 11. Linux / Steam Deck isn't supported.
-- **F1 25** on Steam, game build 25251167. The addon is made for one game build: after a game update it switches
-  itself off (the game runs normally) until the addon is updated.
+- **F1 25** on Steam, game build 26566308 (the update of 16 November 2026) or 25251167. The addon knows the game
+  builds it was made for: after a game update it switches itself off (the game runs normally) until the addon is
+  updated.
 - **Swofty Launcher** with its in-game overlay (the addon's controls are drawn by it).
 - For rendering: [ffmpeg](https://ffmpeg.org), free. If it isn't on your PC, the Render menu shows an
   **Install** button that installs it with WinGet (or run `winget install Gyan.FFmpeg` yourself). It isn't
@@ -109,7 +110,7 @@ yet. The Edit menu lists the edits for the replay you're in.
 
 ## Known limits
 
-- Windows only, and one game build at a time (see above).
+- Windows only, and only the game builds listed above.
 - Paths on a car follow its real drive only for parts of the replay that have been watched; elsewhere they use
   the car's position at the playhead.
 - Final Cut hides the HUD by pressing the game's own hide-HUD button for you. If a press is missed, the HUD may

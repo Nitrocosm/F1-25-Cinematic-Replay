@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Builds the addon and packages it as dist/xsoul.cinematic-replay.swoftyaddon: a zip with swofty.json at its root
-# and only what players need (the DLL, the settings template, the docs and the licenses).
+# and only what players need (the DLL, the post-process shader, the settings template, the docs and the licenses).
 set -euo pipefail
 cd "$(dirname "$0")"
 bash addon/build.sh
 bash addon/tests/run.sh
 stage=dist/stage
 rm -rf "$stage"
-mkdir -p "$stage/native" "$stage/icons"
+mkdir -p "$stage/native" "$stage/icons" "$stage/fx"
 cp addon/swofty.json addon/cinecam.cfg "$stage/"
 cp addon/native/cinecam.dll "$stage/native/"
+cp addon/fx/world_lines.hlsl "$stage/fx/"
 cp addon/icons/cinematic-replay.png "$stage/icons/"
 cp README.md CONTROLS.md LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 out=dist/xsoul.cinematic-replay.swoftyaddon
